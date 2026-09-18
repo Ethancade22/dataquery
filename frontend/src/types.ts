@@ -132,6 +132,81 @@ export interface ReportToolCall {
   result: VisualizationSpec
 }
 
+export interface SemanticFilter {
+  field: string
+  operator: string
+  value?: unknown
+  source?: string
+}
+
+export interface SemanticJoinPath {
+  left_table: string
+  left_field: string
+  right_table: string
+  right_field: string
+  relation_type?: string
+  description?: string
+}
+
+export interface SemanticAmbiguity {
+  parameter: string
+  term: string
+  candidates: Record<string, unknown>[]
+  question: string
+  reason?: string
+}
+
+export interface SemanticQueryPlan {
+  metric?: string | null
+  aggregation?: string | null
+  entity?: string | null
+  time_field?: string | null
+  time_range?: string | null
+  dimensions?: string[]
+  filters?: SemanticFilter[]
+  source_tables?: string[]
+  join_paths?: SemanticJoinPath[]
+  ambiguities?: SemanticAmbiguity[]
+}
+
+export interface SemanticValidationIssue {
+  issue_type: string
+  severity?: "info" | "warning" | "error" | string
+  message: string
+  expected?: unknown
+  actual?: unknown
+  location?: string | null
+  metadata?: Record<string, unknown>
+}
+
+export interface SemanticValidationResult {
+  valid: boolean
+  skipped?: boolean
+  reason?: string
+  issues?: SemanticValidationIssue[]
+  ast_summary?: Record<string, unknown>
+  rule_based?: Record<string, unknown>
+  llm_judge?: Record<string, unknown> | null
+}
+
+export interface CorrectionTraceItem {
+  stage?: string
+  attempt?: number
+  success?: boolean
+  metric?: string | null
+  ambiguity_count?: number
+  issue_count?: number
+  sql?: string
+  validation?: SemanticValidationResult | Record<string, unknown>
+  correction?: {
+    action?: string
+    reason?: string
+    issue_type?: string | null
+    confidence?: number
+    details?: Record<string, unknown>
+  } | Record<string, unknown>
+}
+
 export interface QueryResult {
   task_id: string
   status: "waiting_clarification" | "completed" | "failed"
@@ -176,6 +251,10 @@ export interface QueryResult {
   workflow_mode?: "qa" | "single_database_fast_path" | "multi_database_handoff" | "langgraph_hitl" | string | null
   report?: AnalysisReport | null
   report_tool_calls?: ReportToolCall[]
+  semantic_plan?: SemanticQueryPlan | null
+  semantic_validation?: SemanticValidationResult | null
+  correction_trace?: CorrectionTraceItem[] | null
+  semantic_memories?: SavedMemory[]
 }
 
 export interface ReportDataSource {
@@ -216,8 +295,11 @@ export interface ConfirmedField {
 
 export interface SavedMemory {
   id: string
-  kind: "result_table" | "schema_field"
+  type?: "semantic_memory" | string
+  kind: string
+  status?: "candidate" | "confirmed" | "rejected" | string
   created_at: string
+  updated_at?: string
   task_id?: string
   query?: string
   summary?: string
@@ -229,6 +311,14 @@ export interface SavedMemory {
   label?: string
   field_type?: string
   user_id?: string
+  value?: unknown
+  scope?: unknown
+  source?: unknown
+  evidence?: unknown
+  confidence?: number | null
+  version?: number
+  expires_at?: string | null
+  conflict?: Record<string, unknown> | null
 }
 
 export interface AuthUser {

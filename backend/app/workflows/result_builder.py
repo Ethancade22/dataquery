@@ -83,7 +83,11 @@ class ResultBuilder:
             retrieval=ResultBuilder.public_retrieval(state.get("retrieval") or {}),
             standalone_query=state.get("standalone_query"),
             schema_graph=state.get("schema_graph"),
-            steps=["一次请求预处理：路由并提取检索词", "召回字段并构建Schema图", "LangGraph暂停并等待用户回复"],
+            semantic_plan=state.get("semantic_plan"),
+            semantic_validation=state.get("semantic_validation"),
+            correction_trace=state.get("correction_trace") or [],
+            semantic_memories=state.get("semantic_memories") or [],
+            steps=["一次请求预处理：路由并提取检索词", "召回字段并构建Schema图", "生成Semantic Query Plan", "LangGraph暂停并等待用户回复"],
             workflow_mode=str(state.get("workflow_mode") or "langgraph_hitl"),
         )
 
@@ -110,7 +114,9 @@ class ResultBuilder:
             *([f"独立查询改写：{state.get('standalone_query')}"] if state.get("rewritten") else []),
             "BM25与Dense召回，经RRF融合和Rerank阈值筛选",
             f"构建Schema图：{len(graph.get('tables', []))}张表 / {len(graph.get('fields', []))}个字段",
+            "生成Semantic Query Plan并检查关键业务歧义",
             "单库智能体选择MCP工具并生成SQL" if mode == "single_database_agent" else "多库路径：按数据库生成Handoff",
+            "执行SQL AST语义校验并按错误类型定向修正",
             "通过MCP数据库工具调用DuckDB并整理结果",
         ]
         if state.get("analysis_sources"):
@@ -143,6 +149,10 @@ class ResultBuilder:
             standalone_query=state.get("standalone_query"),
             schema_graph=graph,
             workflow_mode=mode,
+            semantic_plan=state.get("semantic_plan"),
+            semantic_validation=state.get("semantic_validation"),
+            correction_trace=state.get("correction_trace") or [],
+            semantic_memories=state.get("semantic_memories") or [],
         )
 
     @staticmethod
@@ -160,6 +170,10 @@ class ResultBuilder:
             standalone_query=state.get("standalone_query"),
             schema_graph=state.get("schema_graph"),
             workflow_mode=str(state.get("workflow_mode") or "single_database_agent"),
+            semantic_plan=state.get("semantic_plan"),
+            semantic_validation=state.get("semantic_validation"),
+            correction_trace=state.get("correction_trace") or [],
+            semantic_memories=state.get("semantic_memories") or [],
         )
 
     @staticmethod

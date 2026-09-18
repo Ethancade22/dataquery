@@ -20,6 +20,7 @@ from app.model_client import ModelClient
 from app.querying.duckdb_engine import DuckDbEngine
 from app.retrieval import SchemaGraphBuilder, SchemaIndex
 from app.security import AccessController
+from app.semantic import BusinessSemanticLayer, SemanticPlanner, SemanticQueryPlan, SemanticValidator
 from app.workflows.query_graph import QueryWorkflow
 
 
@@ -135,6 +136,79 @@ def field_metrics(retrieved: list[str], expected: list[str]) -> tuple[float, flo
     return recall, precision, true_positive
 
 
+def compare_plan_fields(
+    plan: dict[str, Any],
+    gold_plan: dict[str, Any] | None,
+) -> tuple[float | None, list[str], str]:
+    if not gold_plan:
+        return None, [], "未标注Gold Plan"
+    checked = [
+        "metric",
+        "aggregation",
+        "entity",
+        "time_field",
+        "time_range",
+        "dimensions",
+        "filters",
+        "source_tables",
+    ]
+    mismatches: list[str] = []
+    total = 0
+    matched = 0
+    for key in checked:
+        if key not in gold_plan:
+            continue
+        total += 1
+        actual = plan.get(key)
+        expected = gold_plan.get(key)
+        if isinstance(expected, list):
+            actual_set = {
+                json.dumps(item, ensure_ascii=False, sort_keys=True)
+                if isinstance(item, dict) else str(item)
+                for item in (actual or [])
+            }
+            expected_set = {
+                json.dumps(item, ensure_ascii=False, sort_keys=True)
+                if isinstance(item, dict) else str(item)
+                for item in expected
+            }
+            ok = expected_set.issubset(actual_set)
+        else:
+            ok = actual == expected
+        if ok:
+            matched += 1
+        else:
+            mismatches.append(f"{key}_mismatch")
+    if not total:
+        return None, [], "Gold Plan未包含可比较字段"
+    return matched / total, mismatches, "Gold Plan字段对比完成"
+
+
+def derived_plan_metric(
+    query: str,
+    sql: str,
+    semantic_layer: BusinessSemanticLayer,
+    gold_plan: dict[str, Any] | None = None,
+) -> tuple[float | None, dict[str, Any], list[str], str]:
+    planner = SemanticPlanner(semantic_layer)
+    validator = SemanticValidator(semantic_layer)
+    plan = planner.build_plan(query)
+    plan_dict = plan.to_dict()
+    plan_accuracy, issues, reason = compare_plan_fields(plan_dict, gold_plan)
+    if plan_accuracy is not None:
+        return plan_accuracy, plan_dict, issues, reason
+    if plan.ambiguities or not plan.metric:
+        return None, plan_dict, ["plan_unscored"], "Plan存在歧义或未识别指标，跳过近似评分"
+    validation = validator.validate(query, SemanticQueryPlan(**plan_dict), sql)
+    issue_types = [issue.issue_type for issue in validation.issues]
+    return (
+        1.0 if validation.valid else 0.0,
+        plan_dict,
+        issue_types,
+        "未标注Gold Plan，使用Gold SQL语义校验近似评分",
+    )
+
+
 def percentile(values: list[float], ratio: float) -> float:
     if not values:
         return 0.0
@@ -150,6 +224,10 @@ def summarize(results: list[dict[str, Any]], mode: str) -> dict[str, Any]:
     execution_times = [float(row["execution_ms"]) for row in successful]
     recalls = [float(row["schema_recall"]) for row in results if row.get("schema_recall") is not None]
     precisions = [float(row["schema_precision"]) for row in results if row.get("schema_precision") is not None]
+    plan_scores = [float(row["plan_accuracy"]) for row in results if row.get("plan_accuracy") is not None]
+    plan_issue_counter: Counter[str] = Counter()
+    for row in results:
+        plan_issue_counter.update(str(item) for item in row.get("plan_issue_types") or [])
     errors = [str(row.get("benchmark_error") or "") for row in results]
     timeout_count = sum(
         any(token in error.lower() for token in ("timed out", "timeout", "超时"))
@@ -160,6 +238,9 @@ def summarize(results: list[dict[str, Any]], mode: str) -> dict[str, Any]:
         "case_count": count,
         "schema_recall": round(statistics.fmean(recalls), 6) if recalls else None,
         "schema_precision": round(statistics.fmean(precisions), 6) if precisions else None,
+        "plan_accuracy": round(statistics.fmean(plan_scores), 6) if plan_scores else None,
+        "plan_evaluated_count": len(plan_scores),
+        "plan_error_stats": dict(plan_issue_counter),
         "sql_execution_success_rate": round(len(successful) / count, 6) if count else 0.0,
         "average_execution_ms": round(statistics.fmean(execution_times), 3) if execution_times else 0.0,
         "p95_execution_ms": round(percentile(execution_times, 0.95), 3),
@@ -187,7 +268,19 @@ def summarize(results: list[dict[str, Any]], mode: str) -> dict[str, Any]:
     }
 
 
-def run_gold_case(case: dict[str, Any], engine: DuckDbEngine, scope: Any) -> dict[str, Any]:
+def run_gold_case(
+    case: dict[str, Any],
+    engine: DuckDbEngine,
+    scope: Any,
+    semantic_layer: BusinessSemanticLayer | None = None,
+) -> dict[str, Any]:
+    semantic_layer = semantic_layer or BusinessSemanticLayer()
+    plan_accuracy, semantic_plan, plan_issue_types, plan_reason = derived_plan_metric(
+        case["query"],
+        case["gold_sql"],
+        semantic_layer,
+        case.get("gold_plan"),
+    )
     execution = engine.execute("short_video_ops", case["gold_sql"], scope)
     result_correct, column_match, reason = compare_results(
         execution.columns,
@@ -206,6 +299,10 @@ def run_gold_case(case: dict[str, Any], engine: DuckDbEngine, scope: Any) -> dic
         "query": case["query"],
         "schema_recall": None,
         "schema_precision": None,
+        "plan_accuracy": plan_accuracy,
+        "semantic_plan": semantic_plan,
+        "plan_issue_types": plan_issue_types,
+        "plan_comparison_reason": plan_reason,
         "retrieved_fields": [],
         "gold_fields": case["gold_fields"],
         "generated_sql": case["gold_sql"],
@@ -238,6 +335,14 @@ def run_live_case(
         "gold_fields": case["gold_fields"],
     }
     try:
+        plan_accuracy, semantic_plan, plan_issue_types, plan_reason = derived_plan_metric(
+            case["query"],
+            case["gold_sql"],
+            workflow.business_semantics,
+            case.get("gold_plan"),
+        )
+        business_matches = workflow.business_semantics.match(case["query"], {})
+        plan_model = SemanticQueryPlan(**semantic_plan)
         retrieval_started = time.perf_counter()
         retrieval = schema_index.retrieve(
             case["query"],
@@ -254,6 +359,10 @@ def run_live_case(
                 **base,
                 "schema_recall": recall,
                 "schema_precision": precision,
+                "plan_accuracy": plan_accuracy,
+                "semantic_plan": semantic_plan,
+                "plan_issue_types": plan_issue_types,
+                "plan_comparison_reason": plan_reason,
                 "schema_true_positive": true_positive,
                 "retrieval_ms": retrieval_ms,
                 "retrieved_fields": retrieved_fields,
@@ -266,6 +375,28 @@ def run_live_case(
                 "agent_action": "not_called",
                 "benchmark_error": "Schema图为空",
             }
+        if plan_model.ambiguities:
+            return {
+                **base,
+                "schema_recall": recall,
+                "schema_precision": precision,
+                "plan_accuracy": plan_accuracy,
+                "semantic_plan": semantic_plan,
+                "plan_issue_types": plan_issue_types,
+                "plan_comparison_reason": plan_reason,
+                "schema_true_positive": true_positive,
+                "retrieval_ms": retrieval_ms,
+                "retrieved_fields": retrieved_fields,
+                "generated_sql": "",
+                "sql_execution_success": False,
+                "execution_ms": 0.0,
+                "result_correct": False,
+                "column_match": False,
+                "comparison_reason": "Semantic Query Plan需要澄清",
+                "agent_action": "semantic_clarify",
+                "semantic_validation": {},
+                "benchmark_error": "",
+            }
         decision = workflow.single_database_agent.prepare(
             case["query"],
             "short_video_ops",
@@ -274,12 +405,19 @@ def run_live_case(
             retrieval,
             {},
             scope.public(),
+            semantic_plan=semantic_plan,
+            business_semantics=business_matches.to_dict(),
+            semantic_memories=[],
         )
         if decision["action"] == "clarify":
             return {
                 **base,
                 "schema_recall": recall,
                 "schema_precision": precision,
+                "plan_accuracy": plan_accuracy,
+                "semantic_plan": semantic_plan,
+                "plan_issue_types": plan_issue_types,
+                "plan_comparison_reason": plan_reason,
                 "schema_true_positive": true_positive,
                 "retrieval_ms": retrieval_ms,
                 "retrieved_fields": retrieved_fields,
@@ -296,6 +434,14 @@ def run_live_case(
         tool_trace = list(decision.get("tool_trace") or [])
         final_trace = tool_trace[-1] if tool_trace else {}
         success = bool(execution.get("success"))
+        semantic_validation = {}
+        if success:
+            semantic_validation = workflow.semantic_validator.validate(
+                case["query"],
+                plan_model,
+                str(execution.get("sql") or ""),
+                graph,
+            ).to_dict()
         result_correct, column_match, reason = compare_results(
             list(execution.get("columns") or []),
             list(execution.get("rows") or []),
@@ -307,6 +453,10 @@ def run_live_case(
             **base,
             "schema_recall": recall,
             "schema_precision": precision,
+            "plan_accuracy": plan_accuracy,
+            "semantic_plan": semantic_plan,
+            "plan_issue_types": plan_issue_types,
+            "plan_comparison_reason": plan_reason,
             "schema_true_positive": true_positive,
             "retrieval_ms": retrieval_ms,
             "retrieved_fields": retrieved_fields,
@@ -319,6 +469,7 @@ def run_live_case(
             "agent_action": "executed",
             "query_contract": final_trace.get("query_contract", {}),
             "agent_reason": str(final_trace.get("reason") or ""),
+            "semantic_validation": semantic_validation,
             "benchmark_error": "",
         }
     except Exception as exc:  # 单条用例失败不终止整个评测。
@@ -353,9 +504,11 @@ def save_report(results: list[dict[str, Any]], summary: dict[str, Any], output: 
     csv_temp = csv_path.with_suffix(csv_path.suffix + ".tmp")
     columns = [
         "case_id", "scenario", "category", "query_type", "difficulty", "classic", "query",
-        "schema_recall", "schema_precision", "retrieval_ms", "sql_execution_success",
+        "schema_recall", "schema_precision", "plan_accuracy", "plan_issue_types",
+        "plan_comparison_reason", "retrieval_ms", "sql_execution_success",
         "execution_ms", "result_correct", "column_match", "agent_action",
-        "comparison_reason", "generated_sql", "query_contract", "agent_reason", "error_stage",
+        "comparison_reason", "generated_sql", "semantic_plan", "semantic_validation",
+        "query_contract", "agent_reason", "error_stage",
         "model_request_attempt_count", "model_retry_count", "model_timeout_event_count",
         "model_connection_error_event_count",
         "benchmark_error",
@@ -415,6 +568,10 @@ def save_report(results: list[dict[str, Any]], summary: dict[str, Any], output: 
         f"- {scenario} / {category} / {query_type}：{count}条"
         for (scenario, category, query_type), count in failure_groups.most_common(8)
     ]
+    plan_error_lines = [
+        f"- {issue_type}：{count}条"
+        for issue_type, count in (summary.get("plan_error_stats") or {}).items()
+    ] or ["- 暂无Plan错误统计"]
 
     conclusion = (
         "SQL执行成功率和查询结果正确率均达到目标。"
@@ -432,6 +589,7 @@ def save_report(results: list[dict[str, Any]], summary: dict[str, Any], output: 
         f"- 已完成用例：{case_count}",
         f"- 字段级Schema召回率：{float(summary.get('schema_recall') or 0.0):.2%}",
         f"- 字段级Schema准确率：{float(summary.get('schema_precision') or 0.0):.2%}",
+        f"- Semantic Plan准确率：{float(summary.get('plan_accuracy') or 0.0):.2%}（已评测{summary.get('plan_evaluated_count', 0)}条）",
         f"- SQL执行成功率：{sql_rate:.2%}（目标≥90%，{'达标' if sql_rate >= 0.9 else '未达标'}）",
         f"- 查询结果正确率：{result_rate:.2%}（目标≥80%，{'达标' if result_rate >= 0.8 else '未达标'}）",
         f"- SQL平均执行时间：{float(summary.get('average_execution_ms') or 0.0):.2f} ms",
@@ -450,6 +608,10 @@ def save_report(results: list[dict[str, Any]], summary: dict[str, Any], output: 
         "## 主要失败类型",
         "",
         *failure_lines,
+        "",
+        "## Plan错误统计",
+        "",
+        *plan_error_lines,
         "",
         "## 结论",
         "",
@@ -492,8 +654,14 @@ def main() -> None:
 
     if args.mode == "gold":
         engine = DuckDbEngine()
+        semantic_layer = BusinessSemanticLayer()
         for index, case in enumerate(pending_cases, 1):
-            result = run_gold_case(case, engine, controller.resolve(f"demo_{case['scenario']}"))
+            result = run_gold_case(
+                case,
+                engine,
+                controller.resolve(f"demo_{case['scenario']}"),
+                semantic_layer,
+            )
             results.append(result)
             print(f"[{index}/{len(pending_cases)}] {case['case_id']} success={result['sql_execution_success']} correct={result['result_correct']}")
     else:

@@ -25,6 +25,11 @@ class QueryState(TypedDict, total=False):
     retrieval: dict[str, Any]
     schema_graph: dict[str, Any]
     schema_context: str
+    business_semantics: dict[str, Any]
+    semantic_plan: dict[str, Any]
+    semantic_validation: dict[str, Any]
+    semantic_memories: list[dict[str, Any]]
+    correction_trace: list[dict[str, Any]]
     database_names: list[str]
     clarification: dict[str, Any] | None
     direct_sql: str

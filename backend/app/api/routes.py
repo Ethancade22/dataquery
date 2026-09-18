@@ -177,6 +177,35 @@ def memories(user: AuthUser = Depends(require_user)) -> list[dict]:
     return service.list_memories(user.user_id)
 
 
+@router.get("/memories/candidates")
+def memory_candidates(user: AuthUser = Depends(require_user)) -> list[dict]:
+    return service.list_semantic_memory_candidates(user.user_id)
+
+
+@router.post("/memories/candidates/{memory_id}/confirm")
+def confirm_memory_candidate(
+    memory_id: str,
+    user: AuthUser = Depends(require_user),
+) -> dict[str, object]:
+    try:
+        memory = service.confirm_semantic_memory_candidate(memory_id, user.user_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="语义记忆候选不存在") from error
+    return {"confirmed": True, "memory": memory}
+
+
+@router.post("/memories/candidates/{memory_id}/reject")
+def reject_memory_candidate(
+    memory_id: str,
+    user: AuthUser = Depends(require_user),
+) -> dict[str, object]:
+    try:
+        memory = service.reject_semantic_memory_candidate(memory_id, user.user_id)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="语义记忆候选不存在") from error
+    return {"rejected": True, "memory": memory}
+
+
 @router.post("/memories/fields")
 def save_field_memory(
     payload: SaveFieldMemoryRequest,

@@ -98,6 +98,10 @@ class QueryResult(BaseModel):
     workflow_mode: str | None = None
     report: AnalysisReport | None = None
     report_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    semantic_plan: dict[str, Any] | None = None
+    semantic_validation: dict[str, Any] | None = None
+    correction_trace: list[dict[str, Any]] | None = None
+    semantic_memories: list[dict[str, Any]] | None = None
 
 
 class SchemaField(BaseModel):

@@ -35,6 +35,10 @@ class SingleDatabaseAgent:
         retrieval: dict[str, Any],
         workspace: dict[str, Any],
         access_scope: dict[str, Any],
+        semantic_plan: dict[str, Any] | None = None,
+        business_semantics: dict[str, Any] | None = None,
+        semantic_memories: list[dict[str, Any]] | None = None,
+        semantic_feedback: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         database_tool = f"query_{database}"
         mcp_client = self.mcp_client_factory(access_scope)
@@ -54,13 +58,23 @@ class SingleDatabaseAgent:
                 f"没有找到数据库工具：{database_tool}",
             )
 
-        system = f"你是单数据库问数智能体。\n\n{self.skill.instructions}"
+        system = (
+            f"你是单数据库问数智能体。\n\n{self.skill.instructions}\n\n"
+            "当输入包含 semantic_query_plan 时，SQL 的指标、聚合、时间字段、维度、过滤条件和 Join "
+            "必须优先对齐该结构化计划。business_semantics 是企业统一业务口径，"
+            "user_semantic_memories 是用户已确认的长期语义记忆；它们的优先级高于自由推理。"
+            "如果输入包含 semantic_feedback，说明上一条 SQL 未通过语义校验，"
+            "本轮只针对反馈中指出的问题修复 SQL，不要改变用户原始问题的业务口径。"
+        )
 
         observations: list[dict[str, Any]] = []
         tool_trace: list[dict[str, Any]] = []
         base_payload = {
             "query": query,
             "database": database,
+            "semantic_query_plan": semantic_plan or {},
+            "business_semantics": business_semantics or {},
+            "user_semantic_memories": semantic_memories or [],
             "schema_graph": schema_graph,
             "retrieval": {
                 "threshold": retrieval.get("threshold"),
@@ -72,6 +86,8 @@ class SingleDatabaseAgent:
             "schema_text": schema_context,
             "mcp_tools": tools,
         }
+        if semantic_feedback:
+            base_payload["semantic_feedback"] = semantic_feedback
 
         try:
             for call_index in range(1, self.max_tool_calls + 1):

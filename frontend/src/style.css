@@ -395,6 +395,58 @@ button { cursor: pointer; }
 .execution-details .execution-strip { margin: 8px 0 0; }
 .execution-strip span { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid #e1e8e3; border-radius: 999px; color: #6d7b73; background: #f8faf8; font-size: 8px; }
 .execution-strip i { width: 5px; height: 5px; border-radius: 50%; background: #2c8a62; }
+.semantic-diagnostics { margin: -4px 0 12px; }
+.semantic-detail { margin: 0 0 8px; }
+.semantic-detail[open] { padding: 0 0 8px; border-bottom: 1px solid #eef2ef; }
+.semantic-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  margin-top: 8px;
+  overflow: hidden;
+  border: 1px solid #e2e8e4;
+  border-radius: 8px;
+  background: #e2e8e4;
+}
+.semantic-grid div { min-width: 0; padding: 8px 9px; background: #fbfdfb; }
+.semantic-grid small, .semantic-grid strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.semantic-grid small { margin-bottom: 4px; color: #8a968f; font-size: 7px; }
+.semantic-grid strong { color: #35433b; font-size: 9px; font-weight: 600; }
+.semantic-pill-row, .semantic-memory-strip { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.semantic-pill-row span, .semantic-memory-strip span {
+  padding: 4px 7px;
+  border: 1px solid #e0e8e3;
+  border-radius: 999px;
+  color: #65746c;
+  background: #f8faf8;
+  font-size: 8px;
+}
+.semantic-list { margin-top: 8px; padding: 8px 9px; border: 1px solid #e5ebe7; border-radius: 8px; background: #fbfcfb; }
+.semantic-list p { margin: 0 0 6px; color: #738079; font-size: 8px; font-weight: 700; }
+.semantic-list span { display: block; color: #49564f; font-size: 8px; line-height: 1.65; }
+.semantic-validation-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+.semantic-validation-head > span, .semantic-trace li > span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #2e7757;
+  background: #e8f4ed;
+  font-size: 8px;
+}
+.semantic-validation-head > span.warning, .semantic-trace li > span.warning { color: #9a6b21; background: #f7efdd; }
+.semantic-validation-head > span.passed, .semantic-trace li > span.passed { color: #2e7757; background: #e8f4ed; }
+.semantic-validation-head small { color: #87938c; font-size: 8px; }
+.semantic-note { margin-top: 8px; color: #6b7770; font-size: 8px; line-height: 1.6; }
+.semantic-issue-list { display: grid; gap: 6px; margin-top: 8px; }
+.semantic-issue-list div { padding: 7px 8px; border: 1px solid #eadfda; border-radius: 8px; background: #fffaf8; }
+.semantic-issue-list strong, .semantic-issue-list span { display: block; }
+.semantic-issue-list strong { color: #986051; font-size: 8px; }
+.semantic-issue-list span { margin-top: 3px; color: #5f514d; font-size: 8px; line-height: 1.55; }
+.semantic-trace { display: grid; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
+.semantic-trace li { display: grid; grid-template-columns: 72px auto minmax(0, 1fr); align-items: center; gap: 6px; padding: 7px 8px; border: 1px solid #e5ebe7; border-radius: 8px; background: #fbfcfb; }
+.semantic-trace strong { color: #35423b; font-size: 8px; }
+.semantic-trace small { overflow: hidden; color: #738079; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.semantic-memory-strip { align-items: center; margin-bottom: 2px; }
+.semantic-memory-strip strong { color: #657169; font-size: 8px; }
 .pending-user-message { opacity: .78; }
 .standalone-query { display: flex; align-items: baseline; gap: 8px; margin: -2px 0 10px; padding: 8px 10px; border-left: 2px solid #75a98e; color: #52635a; background: #f5f9f6; font-size: 9px; }
 .standalone-query small { flex: 0 0 auto; color: #849087; font-size: 7px; }
@@ -448,6 +500,21 @@ tbody tr:hover { background: #f8fbf9; }
 .context-heading strong { color: #303d35; font-size: 11px; }
 .context-heading small { margin-top: 2px; color: #929c96; font-size: 8px; }
 .context-heading em { color: #69776f; font-size: 9px; font-style: normal; }
+.semantic-candidate-block { background: #fbfdfb; }
+.semantic-candidate-list { display: grid; gap: 8px; }
+.semantic-candidate-card { padding: 9px; border: 1px solid #e0e8e3; border-radius: 8px; background: #fff; }
+.semantic-candidate-card header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.semantic-candidate-card header span { padding: 3px 6px; border-radius: 999px; color: #356b54; background: #edf6f1; font-size: 7px; font-weight: 700; }
+.semantic-candidate-card header small, .candidate-scope, .candidate-evidence, .candidate-conflict { display: block; color: #87938c; font-size: 7px; line-height: 1.5; }
+.semantic-candidate-card > strong { display: block; color: #304038; font-size: 10px; }
+.semantic-candidate-card p { margin: 5px 0 6px; color: #4d5a53; font-size: 9px; line-height: 1.55; word-break: break-word; }
+.candidate-evidence { margin-top: 3px; }
+.candidate-conflict { margin-top: 5px; color: #9a6b21; }
+.semantic-candidate-card footer { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.semantic-candidate-card footer button { padding: 5px 8px; border: 1px solid #d7e1db; border-radius: 7px; font-size: 8px; font-weight: 700; }
+.semantic-candidate-card footer button:disabled { cursor: wait; opacity: .58; }
+.candidate-reject { color: #7c6d66; background: #fbfaf8; }
+.candidate-confirm { color: white; border-color: #277052 !important; background: #277052; }
 .analysis-context-block { background: #fcfcfd; }
 .analysis-tables-zone { min-height: 86px; padding: 7px; border: 1px dashed #bdc8da; border-radius: 10px; background: #fafbfe; transition: border-color .18s, background .18s; }
 .analysis-tables-zone.filled { border-style: solid; border-color: #c5d0e2; background: #f7f9fd; }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import re
 from typing import Any
 
 from langgraph.types import Command
@@ -11,7 +12,7 @@ from ..errors import PipelineStageError
 from ..model_client import ModelClient
 from ..models import QueryResult
 from ..retrieval import SchemaIndex
-from ..security import AccessController
+from ..security import AccessController, AccessScope
 from ..workflows.query_graph import QueryWorkflow
 from .memory_store import MemoryStore
 from .session_context import SessionContext
@@ -94,6 +95,7 @@ class AskDataService:
             resolved_workspace,
             access_scope.user_id,
         )
+        self._maybe_create_semantic_candidate(normalized, result, access_scope)
         self.context.archive.save_message(
             scoped_session_id,
             "assistant",
@@ -225,6 +227,90 @@ class AskDataService:
         scope = self.access_controller.resolve(user_id)
         return self.memories.list(
             scope.user_id,
+            access_scope=scope.public(),
+            include_all="admin" in scope.roles,
+        )
+
+    def create_semantic_memory_candidate(
+        self,
+        *,
+        kind: str,
+        name: str,
+        value: Any,
+        scope: Any,
+        source: Any = None,
+        evidence: Any = None,
+        confidence: float | None = None,
+        expires_at: str | None = None,
+        user_id: str | None = None,
+        version: int = 1,
+    ) -> dict[str, Any]:
+        access_scope = self.access_controller.resolve(user_id)
+        return self.memories.create_semantic_candidate(
+            kind=kind,
+            name=name,
+            value=value,
+            scope=scope,
+            source=source,
+            evidence=evidence,
+            confidence=confidence,
+            expires_at=expires_at,
+            user_id=access_scope.user_id,
+            access_scope=access_scope.public(),
+            version=version,
+        )
+
+    def list_semantic_memory_candidates(
+        self,
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        scope = self.access_controller.resolve(user_id)
+        return self.memories.list_semantic_candidates(
+            scope.user_id,
+            access_scope=scope.public(),
+            include_all="admin" in scope.roles,
+        )
+
+    def confirm_semantic_memory_candidate(
+        self,
+        memory_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        scope = self.access_controller.resolve(user_id)
+        item = self.memories.confirm_semantic_candidate(
+            memory_id,
+            scope.user_id,
+            access_scope=scope.public(),
+            include_all="admin" in scope.roles,
+        )
+        if not item:
+            raise KeyError(memory_id)
+        return item
+
+    def reject_semantic_memory_candidate(
+        self,
+        memory_id: str,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
+        scope = self.access_controller.resolve(user_id)
+        item = self.memories.reject_semantic_candidate(
+            memory_id,
+            scope.user_id,
+            access_scope=scope.public(),
+            include_all="admin" in scope.roles,
+        )
+        if not item:
+            raise KeyError(memory_id)
+        return item
+
+    def list_confirmed_semantic_memories(
+        self,
+        user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        scope = self.access_controller.resolve(user_id)
+        return self.memories.list_confirmed_semantic_memories(
+            scope.user_id,
+            access_scope=scope.public(),
             include_all="admin" in scope.roles,
         )
 
@@ -255,6 +341,53 @@ class AskDataService:
             "schema_index": self.schema_index.status(),
         }
 
+    def _maybe_create_semantic_candidate(
+        self,
+        query: str,
+        result: QueryResult,
+        access_scope: AccessScope,
+    ) -> None:
+        candidate = self._extract_explicit_semantic_candidate(query)
+        if not candidate:
+            return
+        self.memories.create_semantic_candidate(
+            kind=candidate["kind"],
+            name=candidate["name"],
+            value=candidate["value"],
+            scope=candidate["scope"],
+            source={"task_id": result.task_id, "route": result.route},
+            evidence=[{"role": "user", "text": query}],
+            confidence=1.0,
+            user_id=access_scope.user_id,
+            access_scope=access_scope.public(),
+        )
+
+    @staticmethod
+    def _extract_explicit_semantic_candidate(query: str) -> dict[str, Any] | None:
+        text = query.strip()
+        if not any(token in text for token in ("记住", "以后", "后面", "今后")):
+            return None
+        alias_match = re.search(
+            r"(?:记住|以后|后面|今后)?\s*(?:我(?:后面|以后|今后)?说)?[“\"']?"
+            r"(?P<name>[^，,。；;：:]{2,30})[”\"']?\s*"
+            r"(?:默认)?(?:指|代表|等于|就是|按|默认指|默认是)\s*"
+            r"(?P<value>[^，,。；;]{2,80})",
+            text,
+        )
+        if not alias_match:
+            return None
+        name = alias_match.group("name").strip(" “\"'")
+        name = re.sub(r"(?:默认|通常|一般)$", "", name).strip()
+        value = alias_match.group("value").strip(" “\"'")
+        if not name or not value:
+            return None
+        return {
+            "kind": "metric_alias",
+            "name": name,
+            "value": value,
+            "scope": "user_default",
+        }
+
     def _payload(
         self,
         task_id: str,
@@ -264,17 +397,24 @@ class AskDataService:
         access_scope: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         analysis_context, analysis_sources = self.context.analysis_context(session_id, workspace)
+        scope = AccessScope.from_dict(access_scope) if access_scope else self.access_controller.resolve(None)
+        semantic_memories = self.memories.list_confirmed_semantic_memories(
+            scope.user_id,
+            access_scope=scope.public(),
+            include_all="admin" in scope.roles,
+        )
         return {
             "task_id": task_id,
             "query": query,
             "session_id": session_id,
             "workspace": self.context.query_workspace(workspace),
-            "access_scope": access_scope or self.access_controller.resolve(None).public(),
+            "access_scope": scope.public(),
             "route_context": self.context.route_context(session_id, workspace),
             "short_term_context": self.context.short_term_context(session_id),
             "recent_result_context": self.context.recent_result_context(session_id),
             "analysis_context": analysis_context,
             "analysis_sources": analysis_sources,
+            "semantic_memories": semantic_memories,
             "tool_facts": {},
             "execution_log": [],
             "tool_calls": [],

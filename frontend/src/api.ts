@@ -72,6 +72,15 @@ export const api = {
       body: JSON.stringify({ task_id: taskId }),
     }),
   memories: () => request<SavedMemory[]>("/api/memories"),
+  memoryCandidates: () => request<SavedMemory[]>("/api/memories/candidates"),
+  confirmMemoryCandidate: (memoryId: string) =>
+    request<{ confirmed: boolean; memory: SavedMemory }>(`/api/memories/candidates/${encodeURIComponent(memoryId)}/confirm`, {
+      method: "POST",
+    }),
+  rejectMemoryCandidate: (memoryId: string) =>
+    request<{ rejected: boolean; memory: SavedMemory }>(`/api/memories/candidates/${encodeURIComponent(memoryId)}/reject`, {
+      method: "POST",
+    }),
   saveField: (tableId: string, field: SchemaField) =>
     request<{ saved: boolean }>("/api/memories/fields", {
       method: "POST",

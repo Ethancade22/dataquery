@@ -36,6 +36,8 @@ const pendingQuery = ref("")
 const error = ref("")
 const schema = ref<SchemaTable[]>([])
 const savedMemories = ref<SavedMemory[]>([])
+const memoryCandidates = ref<SavedMemory[]>([])
+const memoryCandidateBusy = ref<string | null>(null)
 const workspace = ref<WorkspaceConfig>({})
 const conversations = ref<ConversationRecord[]>([])
 const activeConversationId = ref("")
@@ -185,11 +187,17 @@ async function initializeUserWorkspace() {
   workspace.value = {}
   schema.value = []
   savedMemories.value = []
+  memoryCandidates.value = []
   createConversation()
   try {
-    const [schemaResult, memories] = await Promise.all([api.schema(), api.memories()])
+    const [schemaResult, memories, candidates] = await Promise.all([
+      api.schema(),
+      api.memories(),
+      api.memoryCandidates(),
+    ])
     schema.value = schemaResult
     savedMemories.value = memories
+    memoryCandidates.value = candidates
   } catch (caught) {
     error.value = caught instanceof Error ? caught.message : "工作区加载失败"
   }
@@ -226,6 +234,8 @@ async function logoutUser() {
     workspace.value = {}
     schema.value = []
     savedMemories.value = []
+    memoryCandidates.value = []
+    memoryCandidateBusy.value = null
     input.value = ""
     error.value = ""
   }
@@ -344,6 +354,40 @@ async function saveResult(result: QueryResult) {
   saveActiveConversation()
 }
 
+async function refreshMemoriesAndCandidates() {
+  const [memories, candidates] = await Promise.all([api.memories(), api.memoryCandidates()])
+  savedMemories.value = memories
+  memoryCandidates.value = candidates
+}
+
+async function confirmMemoryCandidate(memoryId: string) {
+  if (memoryCandidateBusy.value) return
+  memoryCandidateBusy.value = memoryId
+  error.value = ""
+  try {
+    await api.confirmMemoryCandidate(memoryId)
+    await refreshMemoriesAndCandidates()
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "确认语义记忆失败"
+  } finally {
+    memoryCandidateBusy.value = null
+  }
+}
+
+async function rejectMemoryCandidate(memoryId: string) {
+  if (memoryCandidateBusy.value) return
+  memoryCandidateBusy.value = memoryId
+  error.value = ""
+  try {
+    await api.rejectMemoryCandidate(memoryId)
+    await refreshMemoriesAndCandidates()
+  } catch (caught) {
+    error.value = caught instanceof Error ? caught.message : "拒绝语义记忆失败"
+  } finally {
+    memoryCandidateBusy.value = null
+  }
+}
+
 async function toggleSavedField(field: SchemaField, tableId: string) {
   const memoryId = `field:${tableId}.${field.name}`
   if (savedFieldKeys.value.has(`${tableId}:${field.name}`)) {
@@ -444,6 +488,76 @@ function tableLabel(tableId?: string) {
 
 function clarificationHint(result: QueryResult) {
   return result.clarification?.options.map((option) => option.label).join("、") ?? ""
+}
+
+function hasSemanticDiagnostics(result: QueryResult) {
+  return Boolean(
+    result.semantic_plan
+    || result.semantic_validation
+    || result.correction_trace?.length
+    || result.semantic_memories?.length,
+  )
+}
+
+function compactValue(value: unknown, maxLength = 90): string {
+  if (value === null || value === undefined || value === "") return "—"
+  if (typeof value === "string") return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value
+  if (typeof value === "number" || typeof value === "boolean") return String(value)
+  if (Array.isArray(value)) {
+    const text: string = value.map((item) => compactValue(item, 32)).join("、")
+    return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
+  }
+  try {
+    const text = JSON.stringify(value)
+    return text.length > maxLength ? `${text.slice(0, maxLength)}…` : text
+  } catch {
+    return String(value)
+  }
+}
+
+function confidenceLabel(value?: number | null) {
+  return typeof value === "number" ? `${Math.round(value * 100)}%` : "—"
+}
+
+function memoryKindLabel(memory: SavedMemory) {
+  const labels: Record<string, string> = {
+    metric_alias: "指标别名",
+    field_alias: "字段别名",
+    business_rule: "业务规则",
+    semantic_memory: "语义记忆",
+  }
+  return labels[memory.kind] ?? labels[memory.type ?? ""] ?? memory.kind
+}
+
+function validationLabel(result: QueryResult) {
+  const validation = result.semantic_validation
+  if (!validation) return "未返回"
+  if (validation.skipped) return "已跳过"
+  return validation.valid ? "通过" : "需修正"
+}
+
+function traceStageLabel(stage?: string) {
+  const labels: Record<string, string> = {
+    semantic_plan: "语义计划",
+    semantic_validation: "语义校验",
+  }
+  return labels[stage ?? ""] ?? stage ?? "流程节点"
+}
+
+function traceDetail(trace: NonNullable<QueryResult["correction_trace"]>[number]) {
+  const parts: string[] = []
+  if (typeof trace.attempt === "number") parts.push(`第 ${trace.attempt} 次`)
+  if (typeof trace.issue_count === "number") parts.push(`${trace.issue_count} 个问题`)
+  if (typeof trace.ambiguity_count === "number") parts.push(`${trace.ambiguity_count} 个歧义`)
+  const correction = trace.correction
+  if (correction && typeof correction === "object") {
+    const action = "action" in correction ? correction.action : undefined
+    const reason = "reason" in correction ? correction.reason : undefined
+    if (typeof action === "string") parts.push(action)
+    if (typeof reason === "string") parts.push(reason)
+  }
+  if (typeof trace.metric === "string" && trace.metric) parts.push(`指标 ${trace.metric}`)
+  return parts.join(" · ") || compactValue(trace, 120)
 }
 
 </script>
@@ -601,6 +715,76 @@ function clarificationHint(result: QueryResult) {
                   </div>
                 </details>
 
+                <div v-if="hasSemanticDiagnostics(turn.result)" class="semantic-diagnostics">
+                  <details v-if="turn.result.semantic_plan" class="execution-details semantic-detail">
+                    <summary>语义计划</summary>
+                    <div class="semantic-grid">
+                      <div><small>指标</small><strong>{{ compactValue(turn.result.semantic_plan.metric) }}</strong></div>
+                      <div><small>聚合</small><strong>{{ compactValue(turn.result.semantic_plan.aggregation) }}</strong></div>
+                      <div><small>实体</small><strong>{{ compactValue(turn.result.semantic_plan.entity) }}</strong></div>
+                      <div><small>时间</small><strong>{{ compactValue(turn.result.semantic_plan.time_range) }}</strong></div>
+                    </div>
+                    <div class="semantic-pill-row">
+                      <span v-if="turn.result.semantic_plan.source_tables?.length">表 {{ turn.result.semantic_plan.source_tables.join(" / ") }}</span>
+                      <span v-if="turn.result.semantic_plan.dimensions?.length">维度 {{ turn.result.semantic_plan.dimensions.join(" / ") }}</span>
+                      <span v-if="turn.result.semantic_plan.ambiguities?.length">歧义 {{ turn.result.semantic_plan.ambiguities.length }} 个</span>
+                    </div>
+                    <div v-if="turn.result.semantic_plan.filters?.length" class="semantic-list">
+                      <p>过滤条件</p>
+                      <span v-for="(filter, index) in turn.result.semantic_plan.filters" :key="`${filter.field}:${index}`">
+                        {{ filter.field }} {{ filter.operator }} {{ compactValue(filter.value, 40) }}
+                      </span>
+                    </div>
+                    <div v-if="turn.result.semantic_plan.join_paths?.length" class="semantic-list">
+                      <p>关联路径</p>
+                      <span v-for="(path, index) in turn.result.semantic_plan.join_paths" :key="`${path.left_table}:${path.right_table}:${index}`">
+                        {{ path.left_table }}.{{ path.left_field }} → {{ path.right_table }}.{{ path.right_field }}
+                      </span>
+                    </div>
+                  </details>
+
+                  <details v-if="turn.result.semantic_validation" class="execution-details semantic-detail">
+                    <summary>语义校验</summary>
+                    <div class="semantic-validation-head">
+                      <span :class="{ passed: turn.result.semantic_validation.valid, warning: !turn.result.semantic_validation.valid || turn.result.semantic_validation.skipped }">
+                        {{ validationLabel(turn.result) }}
+                      </span>
+                      <small>{{ turn.result.semantic_validation.issues?.length ?? 0 }} 个问题</small>
+                      <small v-if="turn.result.semantic_validation.llm_judge">含 LLM Judge</small>
+                    </div>
+                    <div v-if="turn.result.semantic_validation.reason" class="semantic-note">
+                      {{ turn.result.semantic_validation.reason }}
+                    </div>
+                    <div v-if="turn.result.semantic_validation.issues?.length" class="semantic-issue-list">
+                      <div v-for="issue in turn.result.semantic_validation.issues" :key="`${issue.issue_type}:${issue.message}`">
+                        <strong>{{ issue.severity ?? "warning" }} · {{ issue.issue_type }}</strong>
+                        <span>{{ issue.message }}</span>
+                      </div>
+                    </div>
+                    <div v-else class="semantic-note">未发现需要展示的语义问题。</div>
+                  </details>
+
+                  <details v-if="turn.result.correction_trace?.length" class="execution-details semantic-detail">
+                    <summary>修正轨迹</summary>
+                    <ol class="semantic-trace">
+                      <li v-for="(trace, index) in turn.result.correction_trace" :key="`${trace.stage}:${index}`">
+                        <strong>{{ traceStageLabel(trace.stage) }}</strong>
+                        <span :class="{ passed: trace.success, warning: trace.success === false }">
+                          {{ trace.success === false ? "未通过" : trace.success === true ? "通过" : "记录" }}
+                        </span>
+                        <small>{{ traceDetail(trace) }}</small>
+                      </li>
+                    </ol>
+                  </details>
+
+                  <div v-if="turn.result.semantic_memories?.length" class="semantic-memory-strip">
+                    <strong>已应用语义记忆</strong>
+                    <span v-for="memory in turn.result.semantic_memories" :key="memory.id">
+                      {{ memory.name ?? memoryKindLabel(memory) }} · {{ compactValue(memory.value, 48) }}
+                    </span>
+                  </div>
+                </div>
+
                 <div
                   v-if="turn.result.standalone_query && turn.result.standalone_query !== turn.query"
                   class="standalone-query"
@@ -693,6 +877,43 @@ function clarificationHint(result: QueryResult) {
         <div><p class="kicker">CONTEXT CONTROL</p><h2>本次上下文</h2></div>
         <button @click="resetWorkspace">清空</button>
       </div>
+
+      <section class="context-block semantic-candidate-block">
+        <div class="context-heading">
+          <div><strong>语义记忆候选</strong><small>确认后用于后续语义计划</small></div>
+          <em>{{ memoryCandidates.length }} 条</em>
+        </div>
+        <div v-if="!memoryCandidates.length" class="library-empty">暂无待确认的语义记忆</div>
+        <div v-else class="semantic-candidate-list">
+          <article v-for="candidate in memoryCandidates" :key="candidate.id" class="semantic-candidate-card">
+            <header>
+              <span>{{ memoryKindLabel(candidate) }}</span>
+              <small>置信度 {{ confidenceLabel(candidate.confidence) }}</small>
+            </header>
+            <strong>{{ candidate.name ?? "未命名语义" }}</strong>
+            <p>{{ compactValue(candidate.value, 110) }}</p>
+            <small class="candidate-scope">范围 {{ compactValue(candidate.scope, 80) }}</small>
+            <small v-if="candidate.evidence" class="candidate-evidence">证据 {{ compactValue(candidate.evidence, 90) }}</small>
+            <small v-if="candidate.conflict" class="candidate-conflict">存在冲突 {{ compactValue(candidate.conflict, 72) }}</small>
+            <footer>
+              <button
+                class="candidate-reject"
+                :disabled="Boolean(memoryCandidateBusy)"
+                @click="rejectMemoryCandidate(candidate.id)"
+              >
+                {{ memoryCandidateBusy === candidate.id ? "处理中" : "拒绝" }}
+              </button>
+              <button
+                class="candidate-confirm"
+                :disabled="Boolean(memoryCandidateBusy)"
+                @click="confirmMemoryCandidate(candidate.id)"
+              >
+                {{ memoryCandidateBusy === candidate.id ? "处理中" : "确认" }}
+              </button>
+            </footer>
+          </article>
+        </div>
+      </section>
 
       <section class="context-block query-context-block">
         <div class="context-heading">
